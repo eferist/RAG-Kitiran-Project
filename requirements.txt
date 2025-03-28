@@ -1,0 +1,6 @@
+langchain
+pdfplumber
+torch
+transformers
+weaviate-client
+python-dotenv
