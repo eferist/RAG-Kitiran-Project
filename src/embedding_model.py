@@ -2,7 +2,8 @@ from transformers import AutoTokenizer, AutoModel
 import torch
 
 # Create embeddings for the text chunks
-def create_embeddings(chunks, model_name="bert-base-uncased"):
+# Removed default value for model_name
+def create_embeddings(chunks, model_name: str):
     # Load the tokenizer and model from Hugging Face
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModel.from_pretrained(model_name)
@@ -23,7 +24,8 @@ def create_embeddings(chunks, model_name="bert-base-uncased"):
     # Return the embeddings
     return embeddings
 
-def create_query_embedding(query, model_name="bert-base-uncased"):
+# Removed default value for model_name
+def create_query_embedding(query, model_name: str):
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModel.from_pretrained(model_name)
 
