@@ -8,7 +8,7 @@ def main():
     text = document_loader.load_document("data/Kitiran Dokumen Context.pdf")
 
     # Split the text into chunks
-    chunks = text_splitter.split_text(text, chunk_size=250, chunk_overlap=10)
+    chunks = text_splitter.split_text(text, chunk_size=300, chunk_overlap=10)
 
     # Print the chunks
     for i, chunk in enumerate(chunks):
