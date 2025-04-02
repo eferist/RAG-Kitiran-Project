@@ -62,3 +62,74 @@ def generate_answer(query, context, history):
     except Exception as e:
         print(f"Error during content generation: {e}")
         return f"Sorry, I encountered an error generating the response: {e}"
+
+import json # Add json import for parsing
+
+# New function to generate QA pairs from a text chunk
+def generate_qa_pairs(chunk: str, max_pairs: int = 3):
+    """
+    Generates question-answer pairs from a given text chunk using the LLM.
+
+    Args:
+        chunk: The text chunk to generate QA pairs from.
+        max_pairs: The maximum number of QA pairs to request.
+
+    Returns:
+        A list of dictionaries, where each dictionary is {'question': ..., 'answer': ...},
+        or an empty list if generation fails or no pairs are found.
+    """
+    if not GOOGLE_API_KEY:
+        print("Error: GOOGLE_API_KEY not found for QA generation.")
+        return []
+
+    try:
+        client = genai.Client(api_key=GOOGLE_API_KEY)
+
+        # Construct the prompt for QA generation
+        prompt = f"""You will generate QA pair from the text chunks that will be used for RAG for AI chatbot that represent Yayasan Kitiran. Yayasan Kitiran focuses on oversight the AI implementation in Indonesia.  Based on the following text chunk, generate up to {max_pairs} relevant question-answer pairs.
+The questions should be answerable solely from the provided text.
+Format the output strictly as a JSON list of objects, where each object has a 'question' key and an 'answer' key. Example: [{{"question": "...", "answer": "..."}}]. Also the generated QA Pairs must be in english!
+
+Text Chunk:
+\"\"\"
+{chunk}
+\"\"\"
+
+JSON Output:
+"""
+
+        # Use a simpler generation config for this task, no system message needed
+        generation_config = types.GenerateContentConfig(
+            # Adjust temperature or other parameters if needed for QA generation
+            temperature=0.5, # Slightly creative but still grounded
+            response_mime_type="application/json" # Request JSON output directly if supported
+        )
+
+        response = client.models.generate_content(
+            model='gemini-2.0-flash-001', # Or choose another suitable model
+            contents=prompt,
+            config=generation_config
+        )
+
+        # Attempt to parse the JSON response
+        if response.candidates and response.candidates[0].content.parts:
+            response_text = response.candidates[0].content.parts[0].text
+            try:
+                qa_list = json.loads(response_text)
+                # Basic validation
+                if isinstance(qa_list, list) and all(isinstance(item, dict) and 'question' in item and 'answer' in item for item in qa_list):
+                    return qa_list
+                else:
+                    print(f"Warning: LLM response was valid JSON but not the expected list of QA dicts: {response_text}")
+                    return []
+            except json.JSONDecodeError:
+                print(f"Warning: Failed to decode JSON response from LLM for QA generation: {response_text}")
+                # Optional: Add fallback parsing logic here if needed
+                return []
+        else:
+            print(f"Warning: Unexpected response structure from LLM for QA generation: {response}")
+            return []
+
+    except Exception as e:
+        print(f"Error during QA pair generation: {e}")
+        return []

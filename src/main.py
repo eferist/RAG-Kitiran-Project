@@ -36,22 +36,76 @@ def main(args):
         # --- Indexing Mode ---
         if args.mode == 'index':
             # (Indexing logic remains unchanged)
-            print("Running in INDEX mode.")
-            if not client.collections.exists(collection_name):
-                print(f"Collection '{collection_name}' does not exist. Creating and Indexing...")
-                print(f"Loading document from {DOCUMENT_PATH}...")
-                text = document_loader.load_document(DOCUMENT_PATH)
-                print(f"Splitting text with chunk size {CHUNK_SIZE} and overlap {CHUNK_OVERLAP}...")
-                chunks = text_splitter.split_text(text, chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
-                print(f"Creating embeddings using model {EMBEDDING_MODEL_NAME}...")
-                embeddings = embedding_model.create_embeddings(chunks, model_name=EMBEDDING_MODEL_NAME)
-                collection = vector_store.create_collection(client, collection_name=collection_name)
-                print(f"Collection '{collection_name}' created.")
-                print("Adding data to Weaviate...")
-                vector_store.add_data_to_weaviate(collection, chunks, embeddings)
-                print("Data added to Weaviate.")
+            print("Running in INDEX mode (QA Generation).")
+
+            # --- Delete existing collection if it exists ---
+            if client.collections.exists(collection_name):
+                print(f"Deleting existing collection '{collection_name}'...")
+                client.collections.delete(collection_name)
+                print(f"Collection '{collection_name}' deleted.")
+
+            # --- Create collection with the new schema ---
+            print(f"Creating collection '{collection_name}' with QA schema...")
+            collection = vector_store.create_collection(client, collection_name=collection_name)
+            print(f"Collection '{collection_name}' created.")
+
+            # --- Load and Chunk Document ---
+            print(f"Loading document from {DOCUMENT_PATH}...")
+            text = document_loader.load_document(DOCUMENT_PATH)
+            print(f"Splitting text with chunk size {CHUNK_SIZE} and overlap {CHUNK_OVERLAP}...")
+            chunks = text_splitter.split_text(text, chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
+            print(f"Found {len(chunks)} chunks.")
+
+            # --- Generate QA, Embed Questions, and Prepare Data ---
+            qa_data_list = []
+            total_qa_pairs = 0
+            print("Generating QA pairs and embedding questions...")
+            for i, chunk in enumerate(chunks):
+                print(f"  Processing chunk {i+1}/{len(chunks)}...")
+                # --- Call LLM to generate QA pairs ---
+                # !!! Assumes llm.generate_qa_pairs(chunk) exists and returns a list of {'question': ..., 'answer': ...} dicts
+                # !!! We may need to implement/refine this function in src/llm.py
+                try:
+                    generated_pairs = llm.generate_qa_pairs(chunk) # Placeholder call
+                    if not generated_pairs:
+                         print(f"    No QA pairs generated for chunk {i+1}.")
+                         continue
+                    print(f"    Generated {len(generated_pairs)} QA pair(s) for chunk {i+1}.")
+                except Exception as qa_err:
+                    print(f"    Error generating QA for chunk {i+1}: {qa_err}")
+                    continue # Skip this chunk on error
+
+                for qa_pair in generated_pairs:
+                    if "question" not in qa_pair or "answer" not in qa_pair:
+                        print(f"    Skipping invalid QA pair in chunk {i+1}: {qa_pair}")
+                        continue
+
+                    # --- Embed the Question ---
+                    try:
+                        question_embedding = embedding_model.create_query_embedding(
+                            qa_pair["question"], model_name=EMBEDDING_MODEL_NAME
+                        )
+                        qa_data_list.append({
+                            "question": qa_pair["question"],
+                            "answer": qa_pair["answer"],
+                            "source_chunk": chunk, # Store original chunk
+                            "vector": question_embedding
+                        })
+                        total_qa_pairs += 1
+                    except Exception as emb_err:
+                         print(f"    Error embedding question for chunk {i+1}: {emb_err}")
+                         # Decide whether to skip just this pair or the whole chunk
+
+            print(f"Generated a total of {total_qa_pairs} QA pairs.")
+
+            # --- Add data to Weaviate ---
+            if qa_data_list:
+                print("Adding QA data to Weaviate...")
+                # Use the updated function which expects a list of dicts
+                vector_store.add_data_to_weaviate(collection, qa_data_list)
+                print("QA data added to Weaviate.")
             else:
-                print(f"Collection '{collection_name}' already exists. Indexing skipped.")
+                print("No QA data generated or embedded successfully. Nothing added to Weaviate.")
 
         # --- Querying Mode (Modified for Conversation) ---
         elif args.mode == 'query':
@@ -80,10 +134,17 @@ def main(args):
                     print(f"Creating query embedding using model {EMBEDDING_MODEL_NAME}...")
                     query_embedding = embedding_model.create_query_embedding(query, model_name=EMBEDDING_MODEL_NAME)
 
-                    print(f"Retrieving top {WEAVIATE_TOP_K} similar chunks...")
-                    similar_chunks = vector_store.get_similar_chunks(collection, query_embedding, top_k=WEAVIATE_TOP_K)
-                    context = "\n".join([obj.properties["content"] for obj in similar_chunks])
-                    print(f"Retrieved context: {context[:200]}...") # Print snippet of context
+                    print(f"Retrieving top {WEAVIATE_TOP_K} similar QA pairs based on question similarity...")
+                    # get_similar_chunks returns objects whose *question* vectors matched the query vector
+                    similar_objects = vector_store.get_similar_chunks(collection, query_embedding, top_k=WEAVIATE_TOP_K)
+                    # Extract the *answer* from the properties of the retrieved objects to use as context
+                    context = "\n---\n".join([obj.properties["answer"] for obj in similar_objects if "answer" in obj.properties])
+                    # --- Added explicit print for full retrieved context ---
+                    print("\n--- Full Retrieved Context ---")
+                    print(context)
+                    print("--- End Retrieved Context ---\n")
+                    # --- End Added Print ---
+                    print(f"Retrieved answers for context: {context[:200]}...") # Print snippet of answers
                 else:
                     print("Query does not seem related to 'kitiran', skipping RAG.")
 

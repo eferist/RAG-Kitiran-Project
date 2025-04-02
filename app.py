@@ -79,10 +79,12 @@ def chat():
         print(f"Creating query embedding using model {EMBEDDING_MODEL_NAME}...")
         query_embedding = embedding_model.create_query_embedding(user_message, model_name=EMBEDDING_MODEL_NAME)
 
-        print(f"Retrieving top {WEAVIATE_TOP_K} similar chunks...")
-        similar_chunks = vector_store.get_similar_chunks(weaviate_collection, query_embedding, top_k=WEAVIATE_TOP_K)
-        context = "\n".join([obj.properties["content"] for obj in similar_chunks])
-        print(f"Retrieved context snippet: {context[:200]}...") # Log snippet
+        print(f"Retrieving top {WEAVIATE_TOP_K} similar QA pairs based on question similarity...")
+        # get_similar_chunks returns objects whose *question* vectors matched the query vector
+        similar_objects = vector_store.get_similar_chunks(weaviate_collection, query_embedding, top_k=WEAVIATE_TOP_K)
+        # Extract the *answer* from the properties of the retrieved objects to use as context
+        context = "\n---\n".join([obj.properties["answer"] for obj in similar_objects if "answer" in obj.properties])
+        print(f"Retrieved answers snippet for context: {context[:200]}...") # Log snippet of answers
 
         # --- LLM Call ---
         print("Generating answer...")
