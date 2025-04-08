@@ -6,173 +6,150 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-sys.path.append(".")
-from src import document_loader
-from src import text_splitter
-from src import embedding_model
-from src import vector_store
-from src import llm
+# Add src directory to Python path if running as script
+# (Consider using proper packaging instead for larger projects)
+sys.path.append(os.path.dirname(__file__))
+
+# Import the new service and pipeline classes
+from document_processor import DocumentProcessor
+from embedding_service import EmbeddingService
+from llm_service import LLMService
+from vector_db import VectorDB
+from indexing_pipeline import IndexingPipeline
+from query_pipeline import QueryPipeline
 
 # --- Load Configuration from Environment Variables ---
-DOCUMENT_PATH = os.getenv("DOCUMENT_PATH", "data/default_document.pdf")
+# Consider moving this to a dedicated config module/class later
+DOCUMENT_PATH = os.getenv("DOCUMENT_PATH", "data/Kitiran Dokumen Context.pdf") # Default to provided PDF
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 1000))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 0))
-EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "bert-base-uncased")
-WEAVIATE_HOST = os.getenv("WEAVIATE_HOST", "localhost") # Corrected default based on previous fix
+WEAVIATE_HOST = os.getenv("WEAVIATE_HOST", "localhost")
 WEAVIATE_PORT = os.getenv("WEAVIATE_PORT", "8080")
-WEAVIATE_COLLECTION_NAME = os.getenv("WEAVIATE_COLLECTION_NAME", "DefaultCollection")
+WEAVIATE_COLLECTION_NAME = os.getenv("WEAVIATE_COLLECTION_NAME", "KitiranDocsQA") # More specific name
 WEAVIATE_TOP_K = int(os.getenv("WEAVIATE_TOP_K", 5))
+QA_PAIRS_PER_CHUNK = int(os.getenv("QA_PAIRS_PER_CHUNK", 3))
+API_DELAY_SECONDS = int(os.getenv("API_DELAY_SECONDS", 5)) # Delay for LLM calls in indexing
 # --- End Configuration Loading ---
 
-def main(args):
-    client = None
-    collection_name = WEAVIATE_COLLECTION_NAME
-
+def run_indexing():
+    """Initializes services and runs the indexing pipeline."""
+    print("--- Initializing Services for Indexing ---")
+    vector_db = None # Initialize to None for finally block
     try:
-        print(f"Connecting to Weaviate at {WEAVIATE_HOST}:{WEAVIATE_PORT}...")
-        client = vector_store.connect_to_local(host=WEAVIATE_HOST, port=WEAVIATE_PORT)
-        print("Connected to Weaviate.")
+        doc_processor = DocumentProcessor()
+        llm_service = LLMService() # Assumes API key is handled internally
+        embedding_service = EmbeddingService() # Assumes API key is handled internally
+        vector_db = VectorDB(host=WEAVIATE_HOST, port=WEAVIATE_PORT)
 
-        # --- Indexing Mode ---
-        if args.mode == 'index':
-            # (Indexing logic remains unchanged)
-            print("Running in INDEX mode (QA Generation).")
+        indexing_pipeline = IndexingPipeline(
+            document_processor=doc_processor,
+            llm_service=llm_service,
+            embedding_service=embedding_service,
+            vector_db=vector_db,
+            collection_name=WEAVIATE_COLLECTION_NAME,
+            chunk_size=CHUNK_SIZE,
+            chunk_overlap=CHUNK_OVERLAP,
+            qa_pairs_per_chunk=QA_PAIRS_PER_CHUNK,
+            api_delay_seconds=API_DELAY_SECONDS
+        )
 
-            # --- Delete existing collection if it exists ---
-            if client.collections.exists(collection_name):
-                print(f"Deleting existing collection '{collection_name}'...")
-                client.collections.delete(collection_name)
-                print(f"Collection '{collection_name}' deleted.")
+        print("\n--- Starting Indexing ---")
+        # Run the pipeline, optionally deleting existing data
+        indexing_pipeline.run(document_path=DOCUMENT_PATH, delete_existing=True)
+        print("--- Indexing Complete ---")
 
-            # --- Create collection with the new schema ---
-            print(f"Creating collection '{collection_name}' with QA schema...")
-            collection = vector_store.create_collection(client, collection_name=collection_name)
-            print(f"Collection '{collection_name}' created.")
+    except (ValueError, ConnectionError, RuntimeError) as e:
+        print(f"ERROR during indexing initialization or execution: {e}")
+    except Exception as e:
+        print(f"An unexpected error occurred during indexing: {e}")
+    finally:
+        if vector_db:
+            vector_db.close()
 
-            # --- Load and Chunk Document ---
-            print(f"Loading document from {DOCUMENT_PATH}...")
-            text = document_loader.load_document(DOCUMENT_PATH)
-            print(f"Splitting text with chunk size {CHUNK_SIZE} and overlap {CHUNK_OVERLAP}...")
-            chunks = text_splitter.split_text(text, chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
-            print(f"Found {len(chunks)} chunks.")
+def run_query():
+    """Initializes services and runs the query pipeline in a loop."""
+    print("--- Initializing Services for Querying ---")
+    vector_db = None # Initialize to None for finally block
+    try:
+        llm_service = LLMService()
+        embedding_service = EmbeddingService()
+        vector_db = VectorDB(host=WEAVIATE_HOST, port=WEAVIATE_PORT)
 
-            # --- Generate QA, Embed Questions, and Prepare Data ---
-            qa_data_list = []
-            total_qa_pairs = 0
-            print("Generating QA pairs and embedding questions...")
-            for i, chunk in enumerate(chunks):
-                print(f"  Processing chunk {i+1}/{len(chunks)}...")
-                # --- Call LLM to generate QA pairs ---
-                # !!! Assumes llm.generate_qa_pairs(chunk) exists and returns a list of {'question': ..., 'answer': ...} dicts
-                # !!! We may need to implement/refine this function in src/llm.py
-                try:
-                    generated_pairs = llm.generate_qa_pairs(chunk) # Placeholder call
-                    if not generated_pairs:
-                         print(f"    No QA pairs generated for chunk {i+1}.")
-                         continue
-                    print(f"    Generated {len(generated_pairs)} QA pair(s) for chunk {i+1}.")
-                except Exception as qa_err:
-                    print(f"    Error generating QA for chunk {i+1}: {qa_err}")
-                    continue # Skip this chunk on error
+        # Check if collection exists before starting query loop
+        if not vector_db.collection_exists(WEAVIATE_COLLECTION_NAME):
+             print(f"ERROR: Collection '{WEAVIATE_COLLECTION_NAME}' does not exist.")
+             print("Please run the script in 'index' mode first.")
+             return # Exit if collection is missing
 
-                for qa_pair in generated_pairs:
-                    if "question" not in qa_pair or "answer" not in qa_pair:
-                        print(f"    Skipping invalid QA pair in chunk {i+1}: {qa_pair}")
-                        continue
+        query_pipeline = QueryPipeline(
+            llm_service=llm_service,
+            embedding_service=embedding_service,
+            vector_db=vector_db,
+            collection_name=WEAVIATE_COLLECTION_NAME,
+            top_k=WEAVIATE_TOP_K
+        )
 
-                    # --- Embed the Question ---
-                    try:
-                        question_embedding = embedding_model.create_query_embedding(
-                            qa_pair["question"], model_name=EMBEDDING_MODEL_NAME
-                        )
-                        qa_data_list.append({
-                            "question": qa_pair["question"],
-                            "answer": qa_pair["answer"],
-                            "source_chunk": chunk, # Store original chunk
-                            "vector": question_embedding
-                        })
-                        total_qa_pairs += 1
-                    except Exception as emb_err:
-                         print(f"    Error embedding question for chunk {i+1}: {emb_err}")
-                         # Decide whether to skip just this pair or the whole chunk
+        print("\n--- Starting Conversational Query Mode ---")
+        print("Type 'quit' or 'exit' to end.")
+        conversation_history = []
 
-            print(f"Generated a total of {total_qa_pairs} QA pairs.")
-
-            # --- Add data to Weaviate ---
-            if qa_data_list:
-                print("Adding QA data to Weaviate...")
-                # Use the updated function which expects a list of dicts
-                vector_store.add_data_to_weaviate(collection, qa_data_list)
-                print("QA data added to Weaviate.")
-            else:
-                print("No QA data generated or embedded successfully. Nothing added to Weaviate.")
-
-        # --- Querying Mode (Modified for Conversation) ---
-        elif args.mode == 'query':
-            print("Running in QUERY mode (Conversational). Type 'quit' or 'exit' to end.")
-            if not client.collections.exists(collection_name):
-                print(f"Error: Collection '{collection_name}' does not exist. Please run in 'index' mode first.")
-                return
-
-            collection = client.collections.get(collection_name)
-            print(f"Using existing collection: '{collection_name}'")
-
-            conversation_history = [] # Initialize conversation history
-
-            while True: # Start conversation loop
-                query = input("You: ")
-                if query.lower() in ["quit", "exit"]:
+        while True:
+            try:
+                user_input = input("You: ")
+                if user_input.lower() in ["quit", "exit"]:
                     print("Ending conversation.")
                     break
 
-                conversation_history.append({'role': 'user', 'content': query})
+                # Add user message to history *before* processing
+                conversation_history.append({'role': 'user', 'content': user_input})
 
-                context = None # Default context to None
-                # Conditional RAG based on keyword 'kitiran' (adjust condition as needed)
-                if "kitiran" in query.lower():
-                    print(f"Query contains 'kitiran', performing RAG...")
-                    print(f"Creating query embedding using model {EMBEDDING_MODEL_NAME}...")
-                    query_embedding = embedding_model.create_query_embedding(query, model_name=EMBEDDING_MODEL_NAME)
+                # Process query using the pipeline
+                assistant_response = query_pipeline.process_query(
+                    query=user_input,
+                    history=conversation_history # Pass current history
+                )
 
-                    print(f"Retrieving top {WEAVIATE_TOP_K} similar QA pairs based on question similarity...")
-                    # get_similar_chunks returns objects whose *question* vectors matched the query vector
-                    similar_objects = vector_store.get_similar_chunks(collection, query_embedding, top_k=WEAVIATE_TOP_K)
-                    # Extract the *answer* from the properties of the retrieved objects to use as context
-                    context = "\n---\n".join([obj.properties["answer"] for obj in similar_objects if "answer" in obj.properties])
-                    # --- Added explicit print for full retrieved context ---
-                    print("\n--- Full Retrieved Context ---")
-                    print(context)
-                    print("--- End Retrieved Context ---\n")
-                    # --- End Added Print ---
-                    print(f"Retrieved answers for context: {context[:200]}...") # Print snippet of answers
-                else:
-                    print("Query does not seem related to 'kitiran', skipping RAG.")
+                print(f"Assistant: {assistant_response}")
 
-                print("Generating answer...")
-                # Pass history and potentially None context to llm
-                answer = llm.generate_answer(query=query, context=context, history=conversation_history)
+                # Add assistant response to history
+                conversation_history.append({'role': 'assistant', 'content': assistant_response})
 
-                # Ensure answer is not None before appending (handle potential LLM errors)
-                if answer:
-                    conversation_history.append({'role': 'assistant', 'content': answer})
-                    print(f"Assistant: {answer}")
-                else:
-                    # If LLM failed, don't add None to history, maybe add error message?
-                    print("Assistant: Sorry, I couldn't generate a response.")
-                    # Optionally remove the last user message if LLM failed?
-                    # conversation_history.pop()
+                # Optional: Limit history size
+                # if len(conversation_history) > MAX_HISTORY_LENGTH * 2:
+                #     conversation_history = conversation_history[-MAX_HISTORY_LENGTH*2:]
+
+            except (ValueError, ConnectionError, RuntimeError) as e:
+                 print(f"ERROR during query processing: {e}")
+                 # Optionally remove last user message from history on error?
+                 # conversation_history.pop()
+            except EOFError: # Handle Ctrl+D or unexpected end of input
+                 print("\nInput stream closed. Ending conversation.")
+                 break
+            except KeyboardInterrupt: # Handle Ctrl+C
+                 print("\nInterrupted by user. Ending conversation.")
+                 break
 
 
+    except (ValueError, ConnectionError, RuntimeError) as e:
+        print(f"ERROR during query service initialization: {e}")
     except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f"An unexpected error occurred during query mode: {e}")
     finally:
-        if client:
-            client.close()
-            print("Weaviate connection closed.")
+        if vector_db:
+            vector_db.close()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="RAG Application: Index data or Query.")
     parser.add_argument('--mode', type=str, required=True, choices=['index', 'query'],
                         help="Operation mode: 'index' to process and store data, 'query' to ask questions.")
+    # Add other arguments if needed (e.g., --document-path, --collection-name)
     args = parser.parse_args()
-    main(args)
+
+    if args.mode == 'index':
+        run_indexing()
+    elif args.mode == 'query':
+        run_query()
+    else:
+        print(f"Error: Unknown mode '{args.mode}'")
+        parser.print_help()
