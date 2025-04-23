@@ -6,7 +6,7 @@ from google import genai
 from google.genai import types
 
 # Import prompt templates and constants
-from src import prompts
+import prompts
 
 # Load environment variables (consider moving to a central config loader later)
 load_dotenv()

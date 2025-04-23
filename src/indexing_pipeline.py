@@ -3,10 +3,10 @@ import time
 from typing import List, Dict, Any
 
 # Import the service classes we created
-from src.document_processor import DocumentProcessor
-from src.llm_service import LLMService
-from src.embedding_service import EmbeddingService
-from src.vector_db import VectorDB
+from document_processor import DocumentProcessor
+from llm_service import LLMService
+from embedding_service import EmbeddingService
+from vector_db import VectorDB
 
 class IndexingPipeline:
     """

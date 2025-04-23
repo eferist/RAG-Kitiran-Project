@@ -1,6 +1,7 @@
 import sys
 import argparse
 import os
+import torch # <--- NEW: Needed for checking CUDA
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -17,6 +18,7 @@ from llm_service import LLMService
 from vector_db import VectorDB
 from indexing_pipeline import IndexingPipeline
 from query_pipeline import QueryPipeline
+from reranker_service import RerankerService # <--- NEW: Import RerankerService
 
 # --- Load Configuration from Environment Variables ---
 # Consider moving this to a dedicated config module/class later
@@ -26,13 +28,17 @@ CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 0))
 WEAVIATE_HOST = os.getenv("WEAVIATE_HOST", "localhost")
 WEAVIATE_PORT = os.getenv("WEAVIATE_PORT", "8080")
 WEAVIATE_COLLECTION_NAME = os.getenv("WEAVIATE_COLLECTION_NAME", "KitiranDocsQA") # More specific name
-WEAVIATE_TOP_K = int(os.getenv("WEAVIATE_TOP_K", 5))
+# WEAVIATE_TOP_K = int(os.getenv("WEAVIATE_TOP_K", 30)) # <-- OLD: Rename this
+RETRIEVE_TOP_K = int(os.getenv("RETRIEVE_TOP_K", 50)) # <-- NEW: Renamed & potentially updated default
+RERANK_TOP_N = int(os.getenv("RERANK_TOP_N", 5))        # <-- NEW: How many results after reranking
+RERANKER_MODEL_NAME = os.getenv("RERANKER_MODEL_NAME", 'BAAI/bge-reranker-base') # <-- NEW: Reranker model
 QA_PAIRS_PER_CHUNK = int(os.getenv("QA_PAIRS_PER_CHUNK", 3))
 API_DELAY_SECONDS = int(os.getenv("API_DELAY_SECONDS", 5)) # Delay for LLM calls in indexing
 # --- End Configuration Loading ---
 
 def run_indexing():
     """Initializes services and runs the indexing pipeline."""
+    # ... (indexing logic remains the same) ...
     print("--- Initializing Services for Indexing ---")
     vector_db = None # Initialize to None for finally block
     try:
@@ -81,13 +87,27 @@ def run_query():
              print("Please run the script in 'index' mode first.")
              return # Exit if collection is missing
 
+        # <--- NEW: Instantiate Reranker Service --->
+        # Determine device
+        reranker_device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        print(f"Using device: {reranker_device} for Reranker.")
+        reranker_service = RerankerService(
+            model_name=RERANKER_MODEL_NAME,
+            device=reranker_device
+        )
+        # <--- End Reranker Instantiation --->
+
+        # <--- MODIFIED: Instantiate Query Pipeline --->
         query_pipeline = QueryPipeline(
             llm_service=llm_service,
             embedding_service=embedding_service,
             vector_db=vector_db,
+            reranker_service=reranker_service,         # Pass the reranker service instance
             collection_name=WEAVIATE_COLLECTION_NAME,
-            top_k=WEAVIATE_TOP_K
+            retrieve_top_k=RETRIEVE_TOP_K,             # Use the renamed parameter
+            rerank_top_n=RERANK_TOP_N                  # Pass the new parameter
         )
+        # <--- End Pipeline Instantiation --->
 
         print("\n--- Starting Conversational Query Mode ---")
         print("Type 'quit' or 'exit' to end.")
@@ -133,7 +153,10 @@ def run_query():
     except (ValueError, ConnectionError, RuntimeError) as e:
         print(f"ERROR during query service initialization: {e}")
     except Exception as e:
+        # Catch the specific TypeError if needed, but general Exception is okay too
         print(f"An unexpected error occurred during query mode: {e}")
+        import traceback
+        traceback.print_exc() # Print detailed traceback for debugging
     finally:
         if vector_db:
             vector_db.close()

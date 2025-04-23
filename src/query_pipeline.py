@@ -2,9 +2,10 @@
 from typing import List, Dict, Any, Optional
 
 # Import the service classes
-from src.llm_service import LLMService
-from src.embedding_service import EmbeddingService
-from src.vector_db import VectorDB
+from llm_service import LLMService
+from embedding_service import EmbeddingService
+from vector_db import VectorDB
+from reranker_service import RerankerService
 
 class QueryPipeline:
     """
@@ -15,8 +16,10 @@ class QueryPipeline:
                  llm_service: LLMService,
                  embedding_service: EmbeddingService,
                  vector_db: VectorDB,
+                 reranker_service: RerankerService,
                  collection_name: str,
-                 top_k: int = 5):
+                 retrieve_top_k: int = 20,         
+                 rerank_top_n: int = 5):           
         """
         Initializes the QueryPipeline.
 
@@ -30,12 +33,15 @@ class QueryPipeline:
         self.llm_service = llm_service
         self.embedding_service = embedding_service
         self.vector_db = vector_db
+        self.reranker_service = reranker_service 
         self.collection_name = collection_name
-        self.top_k = top_k
+        self.retrieve_top_k = retrieve_top_k     
+        self.rerank_top_n = rerank_top_n         
 
     def process_query(self, query: str, history: List[Dict[str, str]]) -> str:
         """
         Processes a user query through the RAG pipeline.
+        Includes retrieval and reranking steps. # <--- MODIFIED docstring
 
         Args:
             query: The user's input query string.
@@ -50,6 +56,7 @@ class QueryPipeline:
         print(f"--- Starting Query Pipeline for query: '{query[:50]}...' ---")
 
         # 1. Route Query
+        # ... (routing logic remains the same) ...
         print("Routing query...")
         try:
             route_decision = self.llm_service.route_query(query)
@@ -58,41 +65,65 @@ class QueryPipeline:
             route_decision = "UNRELATED" # Default on error
 
         context: Optional[str] = None
+        final_context_docs: List[str] = [] # Store the actual text snippets for the final context
 
-        # 2. Retrieve Context if Related
+        # 2. Retrieve & Rerank Context if Related
         if route_decision == "RELATED":
             print("Route: RELATED. Performing RAG...")
             try:
-                # 2a. Translate query (as per original logic)
+                # 2a. Translate query
                 print("Translating query to English for search...")
                 english_query = self.llm_service.translate_query_to_english(query)
-                if english_query == query: # Check if translation actually happened or failed
-                    print("Translation may have failed or query was already English.")
+                # ... (optional check if translation happened) ...
 
                 # 2b. Embed translated query
                 print("Embedding translated query...")
                 query_embedding = self.embedding_service.embed_query(english_query)
 
-                # 2c. Search VectorDB
-                print(f"Retrieving top {self.top_k} similar QA pairs from '{self.collection_name}'...")
+                # 2c. Search VectorDB (Initial Retrieval)
+                print(f"Retrieving top {self.retrieve_top_k} potential candidates from '{self.collection_name}'...")
                 # VectorDB search returns list of properties dicts
                 similar_objects_props = self.vector_db.search_similar(
                     collection_name=self.collection_name,
                     query_embedding=query_embedding,
-                    top_k=self.top_k
+                    top_k=self.retrieve_top_k # Use the renamed parameter
                 )
 
-                # 2d. Extract Answers for Context
-                retrieved_answers = [props["answer"] for props in similar_objects_props if "answer" in props]
-                if retrieved_answers:
-                    context = "\n---\n".join(retrieved_answers)
-                    print(f"Retrieved context snippet: {context[:200]}...")
+                # --- START RERANKING --- # <--- NEW SECTION
+                if similar_objects_props:
+                    print(f"Retrieved {len(similar_objects_props)} candidates. Now reranking top {self.rerank_top_n}...")
+
+                    # 2d. Rerank the retrieved candidates
+                    # Assuming 'answer' contains the main text content to rerank
+                    reranked_props = self.reranker_service.rerank(
+                        query=english_query, # Use the same query as for embedding
+                        documents_props=similar_objects_props,
+                        text_key="answer",   # Make sure this key exists in your vector DB objects
+                        top_n=self.rerank_top_n
+                    )
+
+                    # 2e. Extract Answers for Context from RERANKED results
+                    if reranked_props:
+                        final_context_docs = [props["answer"] for props in reranked_props if "answer" in props]
+                        print(f"Selected {len(final_context_docs)} documents after reranking.")
+                    else:
+                        print("Reranking did not yield any results.")
+                        final_context_docs = []
                 else:
-                    print("No relevant context found in vector store.")
-                    context = None # Ensure context is None if nothing found
+                    print("Initial retrieval found no candidates. Skipping reranking.")
+                    final_context_docs = []
+                # --- END RERANKING --- #
+
+                # 2f. Construct Final Context String
+                if final_context_docs:
+                    context = "\n---\n".join(final_context_docs)
+                    print(f"Constructed final context snippet: {context[:200]}...")
+                else:
+                    print("No relevant context found after retrieval (and potentially reranking).")
+                    context = None # Ensure context is None if nothing found/selected
 
             except Exception as e:
-                print(f"Error during RAG retrieval steps: {e}")
+                print(f"Error during RAG retrieval/reranking steps: {e}")
                 # Decide if we should proceed without context or return an error
                 print("Proceeding without retrieved context due to error.")
                 context = None # Ensure context is None on retrieval error
@@ -105,6 +136,7 @@ class QueryPipeline:
              context = None
 
         # 3. Generate Final Answer
+        # ... (generation logic remains the same, using the potentially reranked context) ...
         print("Generating final answer...")
         try:
             # Pass original query, potentially None context, and history
@@ -116,9 +148,7 @@ class QueryPipeline:
             print(f"Generated answer: {answer[:100]}...")
         except Exception as e:
             print(f"Fatal Error: Failed to generate final answer: {e}")
-            # Return a specific error message or re-raise
             answer = "Sorry, I encountered an error while generating the final response."
-            # raise # Optionally re-raise
 
         print("--- Query Pipeline finished ---")
         return answer

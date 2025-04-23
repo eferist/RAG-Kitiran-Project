@@ -1,0 +1,30 @@
+# Environment variables - DO NOT COMMIT SECRETS!
+.env
+
+# Python specific
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+*.log
+
+# Virtual environment directories (adjust if yours is named differently)
+venv/
+.venv/
+env/
+.env/ # Sometimes used for virtualenvs, ensure it doesn't conflict with your secrets file name if different
+ENV/
+
+# Large data files / Input documents
+data/Kitiran Dokumen Context.pdf
+# Or if you want to ignore everything in the data directory:
+# data/
+
+# VS Code specific
+.vscode/
+
+# Add any other files/folders you don't want tracked
